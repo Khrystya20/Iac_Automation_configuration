@@ -1,0 +1,10 @@
+---
+- name: Check if PostgreSQL is installed
+  command: psql --version
+  register: postgres_installed
+  ignore_errors: true
+
+- name: Fail if PostgreSQL is not installed
+  fail:
+    msg: "PostgreSQL is not installed!"
+  when: postgres_installed.failed

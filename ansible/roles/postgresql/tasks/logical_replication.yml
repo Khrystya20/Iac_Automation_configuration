@@ -1,0 +1,12 @@
+---
+- name: Create publication on primary
+  become_user: postgres
+  postgresql_query:
+    db: "{{ database_name }}"
+    query: "CREATE PUBLICATION my_publication FOR TABLE authors, books;"
+
+- name: Create subscription on replica
+  become_user: postgres
+  postgresql_query:
+    db: "{{ database_name }}"
+    query: "CREATE SUBSCRIPTION my_subscription CONNECTION 'host={{ primary_server_ip }} port=5432 user={{ replication_user }} password={{ replication_password }} dbname={{ database_name }}' PUBLICATION my_publication;"

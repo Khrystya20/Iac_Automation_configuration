@@ -1,0 +1,82 @@
+---
+- name: Update package list
+  apt:
+    update_cache: yes
+    cache_valid_time: 3600
+
+- name: Install required packages
+  apt:
+    name:
+      - postgresql-16
+      - python3-psycopg2
+      - net-tools
+      - curl
+    state: present
+
+- name: Ensure PostgreSQL service is running
+  service:
+    name: postgresql@16-main
+    state: started
+    enabled: yes
+
+- name: Configure postgresql.conf
+  template:
+    src: postgresql.conf.j2
+    dest: /etc/postgresql/16/main/postgresql.conf
+    owner: postgres
+    group: postgres
+    mode: 0644
+  notify: Restart PostgreSQL
+
+- name: Configure pg_hba.conf
+  template:
+    src: pg_hba.conf.j2
+    dest: /etc/postgresql/16/main/pg_hba.conf
+    owner: postgres
+    group: postgres
+    mode: 0600
+  notify: Reload PostgreSQL
+
+- name: Ensure PostgreSQL user for replication exists
+  become_user: postgres
+  postgresql_user:
+    name: "{{ replication_user }}"
+    password: "{{ replication_password }}"
+    role_attr_flags: "REPLICATION"
+    state: present
+
+- name: Ensure PostgreSQL database exists
+  become_user: postgres
+  postgresql_db:
+    name: "{{ database_name }}"
+    state: present
+
+- name: Allow outgoing connections
+  ufw:
+    direction: outgoing
+    policy: allow
+
+- name: Allow SSH through UFW
+  ufw:
+    rule: allow
+    name: OpenSSH
+
+- name: Allow PostgreSQL replication traffic
+  ufw:
+    rule: allow
+    proto: tcp
+    port: 5432
+    src: "{{ primary_server_ip }}"
+
+- name: Enable UFW firewall
+  ufw:
+    state: enabled
+
+- name: Verify PostgreSQL installation
+  include_tasks: verify.yml
+
+- name: Include streaming replication tasks
+  include_tasks: streaming_replication.yml
+
+- name: Include logical replication tasks
+  include_tasks: logical_replication.yml

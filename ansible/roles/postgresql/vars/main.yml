@@ -1,0 +1,6 @@
+---
+replication_user: replication_user
+replication_password: strongpassword1
+database_name: librarysystem
+primary_server_ip: "{{ hostvars['server1']['ansible_host'] }}"
+replica_server_ip: "{{ hostvars['server2']['ansible_host'] }}"

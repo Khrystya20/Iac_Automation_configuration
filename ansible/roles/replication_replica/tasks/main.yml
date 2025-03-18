@@ -1,0 +1,43 @@
+---
+- name: Stop PostgreSQL service
+  service:
+    name: postgresql@16-main
+    state: stopped
+
+- name: Remove old database files
+  file:
+    path: /var/lib/postgresql/16/main/
+    state: absent
+
+- name: Restart systemctl to refresh PostgreSQL service
+  shell: systemctl daemon-reexec
+
+- name: Clone database from primary
+  shell: >
+    PGPASSWORD=strongpassword1 pg_basebackup -h {{ hostvars[groups['primary'][0]]['ansible_host'] }}
+    -U replication_user -D /var/lib/postgresql/16/main/ -Fp -Xs -P
+  become_user: postgres
+
+- name: Create standby.signal file
+  file:
+    path: /var/lib/postgresql/16/main/standby.signal
+    state: touch
+    owner: postgres
+    group: postgres
+    mode: '0644'
+
+- name: Start PostgreSQL service
+  service:
+    name: postgresql@16-main
+    state: started
+
+---
+- name: Create logical subscription
+  become_user: postgres
+  postgresql_query:
+    db: librarysystem
+    query: >
+      CREATE SUBSCRIPTION library_sub
+      CONNECTION 'host={{ hostvars[groups["primary"][0]]["ansible_host"] }} port=5432 user=replication_user password=strongpassword1 dbname=librarysystem'
+      PUBLICATION library_pub;
+  ignore_errors: yes

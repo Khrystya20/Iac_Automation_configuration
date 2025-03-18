@@ -1,0 +1,15 @@
+# PostgreSQL Configuration
+listen_addresses = '*'
+port = 5432
+max_connections = 100
+shared_buffers = 256MB
+effective_cache_size = 512MB
+work_mem = 64MB
+maintenance_work_mem = 128MB
+
+# Replication settings
+wal_level = logical
+max_wal_senders = 10
+max_replication_slots = 10
+hot_standby = on
+synchronous_commit = on

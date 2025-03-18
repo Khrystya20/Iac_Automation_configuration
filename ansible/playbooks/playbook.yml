@@ -1,0 +1,30 @@
+---
+- name: Configure PostgreSQL on all servers
+  hosts: all_servers
+  become: yes
+  roles:
+    - postgresql
+
+- name: Configure replication on primary server
+  hosts: primary
+  become: yes
+  roles:
+    - replication_primary
+
+- name: Configure replication on replica server
+  hosts: replica
+  become: yes
+  roles:
+    - replication_replica
+
+- name: Setup logical replication
+  hosts: primary
+  become: yes
+  roles:
+    - logical_replication
+
+- name: Include streaming replication tasks
+  include_tasks: streaming_replication.yml
+
+- name: Include logical replication tasks
+  include_tasks: logical_replication.yml
