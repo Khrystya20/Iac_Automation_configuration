@@ -1,4 +1,4 @@
-# PostgreSQL Streaming Replication Setup with Ansible & Terraform
+# PostgreSQL Streaming and Logical Replication Setup with Ansible & Terraform
 
 This project automates the creation of **two cloud servers** and configures **PostgreSQL streaming and logical replication** between them using **Terraform** and **Ansible**.
 
