@@ -87,3 +87,44 @@
     - name: Show streaming replication status
       debug:
         msg: "Found {{ replica_query.query_result[0]['count'] }} matching rows on replica. Streaming Replication {{ 'SUCCESSFUL' if replica_query.query_result[0]['count'] | int > 0 else 'FAILED' }}"
+
+# Вставка тестового запису до таблиці на primary-сервері
+- name: Insert test row into example_table on primary
+  hosts: primary
+  become: yes
+  become_user: postgres
+  tasks:
+    # Вставка нового рядка у таблицю `example_table`
+    - name: Insert row for logical replication test
+      postgresql_query:
+        db: example_db
+        query: >
+          INSERT INTO example_table (name, description)
+          VALUES ('logical_test', 'Logical replication test')
+          RETURNING id;
+      register: logical_test_insert
+    # Виведення ID вставленого рядка
+    - name: Show inserted row ID
+      debug:
+        var: logical_test_insert
+
+# Перевірка на replica-сервері, чи логічна реплікація спрацювала
+- name: Check if logical replication delivered the test row
+  hosts: replica
+  become: yes
+  become_user: postgres
+  tasks:
+    - name: Wait a bit for logical replication
+      pause:
+        seconds: 5
+    # Запит до репліки — чи з’явився тестовий рядок
+    - name: Query logical replica for test row
+      postgresql_query:
+        db: example_db_replica
+        port: 5433
+        query: "SELECT COUNT(*) FROM example_table WHERE name = 'logical_test';"
+      register: logical_replica_result
+    # Виведення результату — чи логічна реплікація спрацювала
+    - name: Show logical replication status
+      debug:
+        msg: "Logical Replication {{ 'SUCCESSFUL' if logical_replica_result.query_result[0]['count'] | int > 0 else 'FAILED' }}"

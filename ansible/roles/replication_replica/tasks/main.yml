@@ -85,6 +85,74 @@
     group: postgres
     recurse: yes
 
+# Створення окремого кластера PostgreSQL для логічної реплікації
+- name: Create logical cluster on replica
+  command: pg_createcluster {{ pg_version.stdout }} logical --port=5433
+  args:
+    creates: /etc/postgresql/{{ pg_version.stdout }}/logical
+  register: logical_cluster
+
+# Налаштування порту логічного кластера в postgresql.conf
+- name: Configure logical cluster port
+  lineinfile:
+    path: /etc/postgresql/{{ pg_version.stdout }}/logical/postgresql.conf
+    regexp: '^#?port ='
+    line: 'port = 5433'
+  when: logical_cluster.changed
+
+# Запуск нового логічного кластера PostgreSQL
+- name: Start logical replication cluster
+  command: pg_ctlcluster {{ pg_version.stdout }} logical start
+  when: logical_cluster.changed
+
+# Створення нової бази даних у логічному кластері
+- name: Create logical replica database
+  become: yes
+  become_user: postgres
+  postgresql_db:
+    name: example_db_replica
+    port: 5433
+    state: present
+
+# Створення таблиці, яка відповідає структурі тієї, що публікується на primary
+- name: Create matching table in logical replica DB
+  become: yes
+  become_user: postgres
+  postgresql_query:
+    db: example_db_replica
+    port: 5433
+    query: >
+      CREATE TABLE IF NOT EXISTS example_table (
+        id SERIAL PRIMARY KEY,
+        name VARCHAR(100) NOT NULL,
+        description TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+
+# Перевірка, чи вже існує підписка (SUBSCRIPTION)
+- name: Check if subscription already exists
+  become: yes
+  become_user: postgres
+  postgresql_query:
+    db: example_db_replica
+    port: 5433
+    query: "SELECT COUNT(*) FROM pg_subscription WHERE subname = 'example_subscription';"
+  register: subscription_check
+
+# Створення підписки на publication з primary-сервера
+- name: Create subscription to primary's publication
+  become: yes
+  become_user: postgres
+  postgresql_query:
+    db: example_db_replica
+    port: 5433
+    autocommit: yes
+    query: >
+      CREATE SUBSCRIPTION example_subscription
+      CONNECTION 'host={{ private_primary_ip }} dbname=example_db user=logical_replicator password=logical_replication_pw'
+      PUBLICATION example_publication;
+  when: subscription_check.query_result[0].count | int == 0
+
 # Виклик обробника, якщо були зміни
 - name: Add handler to restart PostgreSQL
   meta: flush_handlers

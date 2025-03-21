@@ -103,6 +103,59 @@
         ('item3', 'Third test item')
       ON CONFLICT (id) DO NOTHING;
 
+# Налаштування логічного рівня wal_level для логічної реплікації
+- name: Configure wal_level for logical replication
+  lineinfile:
+    path: /etc/postgresql/{{ pg_version.stdout }}/main/postgresql.conf
+    regexp: '^#?wal_level ='
+    line: 'wal_level = logical'
+  notify: restart postgresql
+
+# Створення користувача, який має право підписуватися на publication
+- name: Create logical replication user
+  become: yes
+  become_user: postgres
+  postgresql_user:
+    name: logical_replicator
+    password: logical_replication_pw
+    role_attr_flags: REPLICATION,LOGIN
+    state: present
+    login_unix_socket: "/var/run/postgresql"
+
+# Дозвіл підключення логічного реплікатора через pg_hba.conf
+- name: Allow logical replication user in pg_hba.conf
+  lineinfile:
+    path: /etc/postgresql/{{ pg_version.stdout }}/main/pg_hba.conf
+    line: "host all logical_replicator {{ private_replica_ip }}/32 md5"
+    insertafter: EOF
+  notify: restart postgresql
+
+# Перевірка, чи вже існує publication з назвою 'example_publication'
+- name: Check if publication already exists
+  become: yes
+  become_user: postgres
+  postgresql_query:
+    db: example_db
+    query: "SELECT COUNT(*) FROM pg_publication WHERE pubname = 'example_publication';"
+  register: publication_check
+
+# Створення publication, яка включає таблицю для логічної реплікації
+- name: Create publication for logical replication if not exists
+  become: yes
+  become_user: postgres
+  postgresql_query:
+    db: example_db
+    query: "CREATE PUBLICATION example_publication FOR TABLE example_table;"
+  when: publication_check.query_result[0].count | int == 0
+
+# Надання прав логічному реплікатору на читання таблиці для логічної реплікації
+- name: Grant privileges to logical replicator
+  become: yes
+  become_user: postgres
+  postgresql_query:
+    db: example_db
+    query: "GRANT SELECT ON example_table TO logical_replicator;"
+
 # Виклик обробника, якщо були зміни
 - name: Add handler to restart PostgreSQL
   meta: flush_handlers
