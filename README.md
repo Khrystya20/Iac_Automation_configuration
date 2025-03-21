@@ -25,7 +25,7 @@ This project automates the creation of **two cloud servers** and configures **Po
 
 ### Run Terraform First
 
-Navigate to the `terraform/` directory:
+Navigate to the Terraform directory and apply the infrastructure setup:
 
 ```bash
 cd terraform
