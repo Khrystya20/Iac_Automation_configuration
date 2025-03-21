@@ -1,51 +1,108 @@
 ---
-- name: Configure postgresql.conf for replication
-  template:
-    src: postgresql.conf.j2
-    dest: /etc/postgresql/16/main/postgresql.conf
-  notify: Restart PostgreSQL
+# Налаштування PostgreSQL на основному сервері (Primary)
 
-- name: Configure pg_hba.conf for replication access
-  template:
-    src: pg_hba.conf.j2
-    dest: /etc/postgresql/16/main/pg_hba.conf
-  notify: Reload PostgreSQL
+# Надання дозволу PostgreSQL слухати всі мережеві інтерфейси
+- name: Configure PostgreSQL to listen on all interfaces
+  lineinfile:
+    path: /etc/postgresql/{{ pg_version.stdout }}/main/postgresql.conf
+    regexp: '^#?listen_addresses ='
+    line: "listen_addresses = '*'"
+  notify: restart postgresql
 
-- name: Restart PostgreSQL to apply changes
+# Налаштування параметрів конфігурації для потокової реплікації
+- name: Modify postgresql.conf for streaming replication
+  lineinfile:
+    path: /etc/postgresql/{{ pg_version.stdout }}/main/postgresql.conf
+    regexp: "{{ item.regexp }}"
+    line: "{{ item.line }}"
+  loop:
+    - { regexp: '^#?wal_level =', line: "wal_level = replica" }
+    - { regexp: '^#?max_wal_senders =', line: "max_wal_senders = 10" }
+    - { regexp: '^#?max_replication_slots =', line: "max_replication_slots = 10" }
+  notify: restart postgresql
+
+# Додавання записів в pg_hba.conf для дозволу підключень від репліки
+- name: Allow remote access in pg_hba.conf
+  lineinfile:
+    path: /etc/postgresql/{{ pg_version.stdout }}/main/pg_hba.conf
+    line: "{{ item }}"
+    insertafter: EOF
+  loop:
+    - "host    all             all             0.0.0.0/0               md5"
+    - "host    replication     replicator      {{ private_replica_ip }}/32  md5"
+    - "host    all             all             {{ private_primary_ip }}/32   md5"
+    - "host    all             all             127.0.0.1/32             md5"
+  notify: restart postgresql
+
+# Відкрити порт PostgreSQL у фаєрволі
+- name: Open PostgreSQL port 5432 in UFW
+  ufw:
+    rule: allow
+    port: "5432"
+    proto: tcp
+  notify: restart postgresql
+
+# Перевірка, що служба PostgreSQL запущена і включена при старті системи
+- name: Ensure PostgreSQL service is enabled and started
   service:
-    name: postgresql@16-main
-    state: restarted
+    name: postgresql
+    enabled: yes
+    state: started
 
+# Очікувати, поки сокет PostgreSQL буде доступний
+- name: Ensure PostgreSQL is up and running
+  wait_for:
+    path: /var/run/postgresql/.s.PGSQL.5432
+    timeout: 60
+
+# Створення користувача для потокової реплікації
 - name: Create replication user
+  become: yes
   become_user: postgres
   postgresql_user:
-    name: replication_user
-    password: strongpassword1
-    role_attr_flags: "REPLICATION"
+    name: replicator
+    password: replication_password
+    role_attr_flags: REPLICATION,LOGIN
     state: present
+    login_unix_socket: "/var/run/postgresql"
 
-- name: Create test database
+# Створення прикладу бази даних
+- name: Create example database
+  become: yes
   become_user: postgres
   postgresql_db:
-    name: librarysystem
+    name: example_db
+    owner: postgres
     state: present
 
-- name: Ensure authors table exists
+# Створення таблиці в базі даних
+- name: Create example table
+  become: yes
   become_user: postgres
   postgresql_query:
-    db: librarysystem
-    query: |
-      CREATE TABLE IF NOT EXISTS authors (
-          author_id SERIAL PRIMARY KEY,
-          first_name VARCHAR(50) NOT NULL,
-          last_name VARCHAR(50) NOT NULL,
-          birth_date DATE
+    db: example_db
+    query: >
+      CREATE TABLE IF NOT EXISTS example_table (
+        id SERIAL PRIMARY KEY,
+        name VARCHAR(100) NOT NULL,
+        description TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
-  ignore_errors: no
 
-- name: Create a publication for logical replication
+# Додавання записів до таблиці
+- name: Insert sample data
+  become: yes
   become_user: postgres
   postgresql_query:
-    db: librarysystem
-    query: "CREATE PUBLICATION library_pub FOR TABLE authors;"
-  ignore_errors: no
+    db: example_db
+    query: >
+      INSERT INTO example_table (name, description)
+      VALUES
+        ('item1', 'First test item'),
+        ('item2', 'Second test item'),
+        ('item3', 'Third test item')
+      ON CONFLICT (id) DO NOTHING;
+
+# Виклик обробника, якщо були зміни
+- name: Add handler to restart PostgreSQL
+  meta: flush_handlers

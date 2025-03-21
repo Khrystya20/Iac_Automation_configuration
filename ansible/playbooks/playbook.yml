@@ -1,30 +1,89 @@
 ---
-- name: Configure PostgreSQL on all servers
+# playbook, який виконує встановлення та налаштування потокової реплікації PostgreSQL
+
+# Встановлення PostgreSQL на всіх серверах
+- name: Install PostgreSQL on all servers
   hosts: all_servers
   become: yes
   roles:
-    - postgresql
+    - ../roles/postgresql
 
-- name: Configure replication on primary server
+# Налаштування PRIMARY-сервера (основного)
+- name: Configure primary PostgreSQL server
   hosts: primary
   become: yes
   roles:
-    - replication_primary
+    - ../roles/replication_primary
 
-- name: Configure replication on replica server
+# Налаштування REPLICA-сервера (репліки)
+- name: Configure replica PostgreSQL server
   hosts: replica
   become: yes
   roles:
-    - replication_replica
+    - ../roles/replication_replica
 
-- name: Setup logical replication
+# Перевірка роботи потокової реплікації на PRIMARY-сервері
+- name: Verify streaming replication
   hosts: primary
   become: yes
-  roles:
-    - logical_replication
+  become_user: postgres # Виконання запитів від імені користувача PostgreSQL
+  tasks:
+    - name: Check WAL sender status
+      postgresql_query:
+        db: postgres
+        query: "SELECT client_addr, state FROM pg_stat_replication;"
+      register: replication_status # Зберігання результату запиту у змінну
 
-- name: Include streaming replication tasks
-  include_tasks: streaming_replication.yml
+    - name: Debug WAL sender status
+      debug:
+        var: replication_status
 
-- name: Include logical replication tasks
-  include_tasks: logical_replication.yml
+    - name: Show replication status
+      debug:
+        msg: "Streaming replication is {{ 'ACTIVE' if replication_status.query_result | length > 0 else 'NOT WORKING' }}"
+
+# Перевірка стану репліки
+- name: Verify streaming replication on replica
+  hosts: replica
+  become: yes
+  become_user: postgres # Виконання запитів від імені користувача PostgreSQL
+  tasks:
+    - name: Check if replica is in recovery mode
+      postgresql_query:
+        db: postgres
+        query: "SELECT pg_is_in_recovery();"
+      register: recovery_status # Результат перевірки
+
+    - name: Show replica recovery state
+      debug:
+        msg: "Replica is in recovery mode: {{ recovery_status.query_result[0]['pg_is_in_recovery'] }}" # Виведення `true`, якщо репліка працює у режимі read-only
+
+    # Тестування потокової реплікації шляхом вставки даних у PRIMARY-сервер
+    - name: Insert test data on primary
+      run_once: yes
+      delegate_to: "{{ groups['primary'][0] }}" # Виконання задачі на основному сервері
+      postgresql_query:
+        db: example_db
+        query: >
+          INSERT INTO example_table (name, description)
+          VALUES ('streaming_test', 'Streaming replication test')
+          RETURNING id;
+      register: insert_result
+      ignore_errors: yes
+
+    # Очікування синхронізації реплікації (декілька секунд)
+    - name: Wait for replication to sync (brief pause)
+      pause:
+        seconds: 5
+
+    # Перевірка, чи дані з'явилися на репліці
+    - name: Query replica for test data
+      postgresql_query:
+        db: example_db
+        query: "SELECT COUNT(*) FROM example_table WHERE name = 'streaming_test';"
+      register: replica_query # Збереження результату запиту
+
+    # Виведення статусу реплікації
+    - name: Show streaming replication status
+      debug:
+        msg: "Found {{ replica_query.query_result[0]['count'] }} matching rows on replica. Streaming Replication {{ 'SUCCESSFUL' if replica_query.query_result[0]['count'] | int > 0 else 'FAILED' }}"

@@ -1,43 +1,90 @@
 ---
+# Налаштування PostgreSQL на сервері-репліці (Replica)
+
+# Зупинка служби PostgreSQL на репліці перед резервним копіюванням
 - name: Stop PostgreSQL service
   service:
-    name: postgresql@16-main
+    name: postgresql
     state: stopped
 
-- name: Remove old database files
-  file:
-    path: /var/lib/postgresql/16/main/
-    state: absent
+# Перевірка, чи відкритий порт 5432 (PostgreSQL) на основному сервері з точки зору репліки
+- name: Check if port 5432 is open between servers
+  wait_for:
+    host: "{{ private_primary_ip }}"
+    port: 5432
+    timeout: 5
+  ignore_errors: yes
+  register: port_check
 
-- name: Restart systemctl to refresh PostgreSQL service
-  shell: systemctl daemon-reexec
+# Виведення результату перевірки порту
+- name: Display port check result
+  debug:
+    msg: "Port 5432 is {{ 'open' if port_check.failed is false else 'closed' }} between {{ inventory_hostname }} and {{ primary_server_ip }}"
 
-- name: Clone database from primary
-  shell: >
-    PGPASSWORD=strongpassword1 pg_basebackup -h {{ hostvars[groups['primary'][0]]['ansible_host'] }}
-    -U replication_user -D /var/lib/postgresql/16/main/ -Fp -Xs -P
-  become_user: postgres
-
-- name: Create standby.signal file
-  file:
-    path: /var/lib/postgresql/16/main/standby.signal
-    state: touch
-    owner: postgres
-    group: postgres
-    mode: '0644'
-
-- name: Start PostgreSQL service
-  service:
-    name: postgresql@16-main
-    state: started
-
----
-- name: Create logical subscription
+# Створення слоту реплікації на основному сервері, якщо його ще не існує
+- name: Create replication slot on primary (only if missing)
+  delegate_to: "{{ primary_server_ip }}"
+  become: yes
   become_user: postgres
   postgresql_query:
-    db: librarysystem
-    query: >
-      CREATE SUBSCRIPTION library_sub
-      CONNECTION 'host={{ hostvars[groups["primary"][0]]["ansible_host"] }} port=5432 user=replication_user password=strongpassword1 dbname=librarysystem'
-      PUBLICATION library_pub;
-  ignore_errors: yes
+    db: postgres
+    query: "SELECT COUNT(*) FROM pg_replication_slots WHERE slot_name = 'replica_slot';"
+  register: slot_check
+
+- name: Create replication slot if not exists
+  delegate_to: "{{ primary_server_ip }}"
+  become: yes
+  become_user: postgres
+  postgresql_query:
+    db: postgres
+    query: "SELECT pg_create_physical_replication_slot('replica_slot');"
+  when: slot_check.query_result[0].count | int == 0
+
+# Резервне копіювання наявного каталогу даних, якщо він ще не був збережений
+- name: Backup primary data directory
+  command: mv /var/lib/postgresql/{{ pg_version.stdout }}/main /var/lib/postgresql/{{ pg_version.stdout }}/main.bak
+  args:
+    creates: /var/lib/postgresql/{{ pg_version.stdout }}/main.bak
+
+# Повторна зупинка PostgreSQL на репліці перед копіюванням з майстра
+- name: Stop PostgreSQL before base backup
+  service:
+    name: postgresql
+    state: stopped
+  become: yes
+
+# Видалення старих даних PostgreSQL (оскільки їх буде замінено бекапом з primary)
+- name: Remove existing PostgreSQL data directory
+  file:
+    path: /var/lib/postgresql/{{ pg_version.stdout }}/main
+    state: absent
+  become: yes
+
+# Повне резервне копіювання з primary-сервера з підключенням як реплікатор
+- name: Create base backup from primary
+  become: yes
+  become_user: postgres
+  command: >
+    pg_basebackup -h {{ private_primary_ip }} -D /var/lib/postgresql/{{ pg_version.stdout }}/main
+    -U replicator -P -v -X stream -S replica_slot -R
+  environment:
+    PGPASSWORD: replication_password
+
+# Запуск PostgreSQL після того, як дані були відновлені з бекапу
+- name: Start PostgreSQL after base backup
+  service:
+    name: postgresql
+    state: started
+  become: yes
+
+# Перевірка, що власник файлів PostgreSQL — користувач postgres
+- name: Set correct ownership on data directory
+  file:
+    path: /var/lib/postgresql/{{ pg_version.stdout }}/main
+    owner: postgres
+    group: postgres
+    recurse: yes
+
+# Виклик обробника, якщо були зміни
+- name: Add handler to restart PostgreSQL
+  meta: flush_handlers
