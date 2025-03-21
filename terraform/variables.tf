@@ -25,7 +25,7 @@ variable "key_name" {
 variable "ssh_private_key_path" {
   description = "Path to SSH private key"
   type        = string
-  default     = "~/.ssh/boiko-key.pem"
+  default     = "~/.ssh/boiko-key"
 }
 
 variable "public_ssh_keys" {
